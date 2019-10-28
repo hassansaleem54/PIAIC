@@ -1,0 +1,239 @@
+Bank Payment Acknowledgement API Processing in Oracle Payments/Payables through XML parsing
+
+Payment Acknowledgement functionality is about to load and display in EBS the bank processing status for each of your supplier/employee payments after successful transmission of the payment file to your bank.
+
+
+Starting with release 12.2 a standard API is available to load acknowledgement file but the load of files to EBS database and call of API is subject of additional development.
+
+
+From a setup point of view only Bank Acknowledgement Code Setup is required as your bank status codes should be mapped to ISO statuses provided by Oracle Payments:
+
+·                     Accepted technical, syntactical and profile; passed to back office          (BACKOFF)
+·                     Accepted back office; passed to clearing          (CLEAR)
+·                     Accepted with change   (ACCC)
+·                     Pending further processing        (PEND)
+·                   Rejection          (REJECT)
+
+
+
+From EBS process point of view this functionality will just show to you the bank status of your payment but will NOT:
+
+·                    Void/change EBS payment status in Oracle Payments/Payables 
+·                    Impact bank reconciliation process in Cash Management
+
+
+Sample Code:
+
+procedure payments_ack   (p_xml                in  xmltype,
+                          x_return_status      out varchar2,
+                          x_msg_data           out varchar2)
+is
+p_return_status varchar2(1);
+p_ret_msg varchar2(2000);
+p_msg_cnt number;
+v_count number;
+l_pay_ref_num iby_payments_all.payment_reference_number%type;
+
+l_payment_id iby_payments_all.payment_id%type;
+l_payment_reference_number iby_payments_all.payment_reference_number%type;
+l_payment_instruction_id iby_payments_all.payment_instruction_id%type;
+l_paper_document_number iby_payments_all.paper_document_number%type;
+l_bank_assigned_ref_code iby_payments_all.bank_assigned_ref_code%type;
+l_bank_assigned_ref_code2 iby_payments_all.bank_assigned_ref_code%type;
+l_payer_legal_entity_name iby_payments_all.payer_legal_entity_name%type;
+l_int_bank_name iby_payments_all.int_bank_name%type;
+l_int_bank_branch_name iby_payments_all.int_bank_branch_name%type;
+l_int_eft_swift_code iby_payments_all.int_eft_swift_code%type;
+l_int_bank_account_number iby_payments_all.int_bank_account_number%type;
+l_int_bank_account_iban iby_payments_all.int_bank_account_iban%type;
+l_beneficiary_name iby_payments_all.beneficiary_name%type;
+l_ext_bank_name iby_payments_all.ext_bank_name%type;
+l_ext_bank_branch_name iby_payments_all.ext_bank_branch_name%type;
+l_ext_eft_swift_code iby_payments_all.ext_eft_swift_code%type;
+l_ext_bank_account_num_elec iby_payments_all.ext_bank_account_num_elec%type;
+l_ext_bank_account_iban_number iby_payments_all.ext_bank_account_iban_number%type;
+l_payment_amount iby_payments_all.payment_amount%type;
+l_bank_charges number;
+l_payment_currency_code iby_payments_all.payment_currency_code%type;
+l_org_id number(15);
+
+rej_dtls_TAB  IBY_IMPORT_PMT_ACK_DATA_PUB.Reject_dtls_tbl_type ;
+rej_dtl_rec IBY_IMPORT_PMT_ACK_DATA_PUB.REJECT_DTLS_REC;
+
+begin
+
+--fnd_global.APPS_INITIALIZE(944523,63117,200);
+
+FOR r IN (
+    SELECT 
+     ExtractValue(Value(p),'/row/BANK_STATUS_CODE/text()') as BANK_STATUS_CODE
+    ,ExtractValue(Value(p),'/row/CHECK_NUMBER/text()') as CHECK_NUMBER
+    ,ExtractValue(Value(p),'/row/BANK_ERROR_CODE/text()') as BANK_ERROR_CODE
+    ,ExtractValue(Value(p),'/row/BANK_ERROR_MESSAGE/text()') as BANK_ERROR_MESSAGE
+    ,ExtractValue(Value(p),'/row/BANK_ERROR_LOCATION/text()') as BANK_ERROR_LOCATION
+    FROM   TABLE(XMLSEQUENCE(EXTRACT(p_xml,'/PaymentsAck/row'))) p ) 
+
+    loop
+    
+      begin
+      
+        if r.BANK_STATUS_CODE is null then
+        x_return_status:='REJECTED';
+        x_msg_data:='BANK_STATUS_CODE cannot be null!';
+        dbms_output.put_line (x_return_status||'---'||x_msg_data);
+        return;
+        end if;
+      
+        begin
+        select payment_reference_number
+        into   l_pay_ref_num
+        from iby_payments_all a , ap_checks_all c
+        where a.payment_id = c.payment_id
+        and check_number = r.check_number;
+        exception when others then
+        x_return_status:='REJECTED';
+        x_msg_data:='Invalid Check Number, Record Not Found!';
+        dbms_output.put_line (x_return_status||'---'||x_msg_data);         
+        return;
+        end;
+        
+        select count(*)
+        into v_count
+        from apps.iby_payments_all
+        where payment_reference_number = l_pay_ref_num;
+        
+        if v_count = 1 then
+        
+            select ipa.payment_id,
+                   ipa.payment_reference_number,
+                   ipa.payment_instruction_id,
+                   paper_document_number,
+                   ipa.bank_assigned_ref_code p_bank_assigned_ref_code1,
+                   null p_bank_assigned_ref_code2,
+                   ipa.payer_legal_entity_name,
+                   ipa.int_bank_name,
+                   ipa.int_bank_branch_name,
+                   ipa.int_eft_swift_code,
+                   ipa.int_bank_account_number,
+                   ipa.int_bank_account_iban,
+                   ipa.beneficiary_name,
+                   ipa.ext_bank_name,
+                   ipa.ext_bank_branch_name,
+                   ipa.ext_eft_swift_code,
+                   ipa.ext_bank_account_num_elec,
+                   ipa.ext_bank_account_iban_number,
+                   ipa.payment_amount,
+                   null bank_charges,
+                   ipa.payment_currency_code,
+                   ipa.org_id
+                   into
+                   l_payment_id,
+                   l_payment_reference_number,
+                   l_payment_instruction_id,
+                   l_paper_document_number,
+                   l_bank_assigned_ref_code,
+                   l_bank_assigned_ref_code2,
+                   l_payer_legal_entity_name,
+                   l_int_bank_name,
+                   l_int_bank_branch_name,
+                   l_int_eft_swift_code,
+                   l_int_bank_account_number,
+                   l_int_bank_account_iban,
+                   l_beneficiary_name,
+                   l_ext_bank_name,
+                   l_ext_bank_branch_name,
+                   l_ext_eft_swift_code,
+                   l_ext_bank_account_num_elec,
+                   l_ext_bank_account_iban_number,
+                   l_payment_amount,
+                   l_bank_charges,
+                   l_payment_currency_code,
+                   l_org_id
+              from apps.iby_payments_all ipa       
+             where payment_reference_number = l_pay_ref_num;
+
+            rej_dtl_rec.BANK_ERROR_CODE := r.BANK_ERROR_CODE;
+            rej_dtl_rec.BANK_ERROR_MESSAGE := r.BANK_ERROR_MESSAGE;
+            rej_dtl_rec.BANK_ERROR_LOCATION := r.BANK_ERROR_LOCATION;
+        
+            rej_dtls_TAB(1) := rej_dtl_rec;
+
+            iby_import_pmt_ack_data_pub.Create_Acknowlegment
+            (
+            P_PAYMENT_REF_NUMBER            => l_payment_reference_number,
+            P_PMT_INSTRUCTION_REF_NUMBER    => l_payment_instruction_id,
+            P_BANK_STATUS_CODE              => r.BANK_STATUS_CODE,
+            P_ACKNOWLEDGEMENT_DATE          => sysdate,
+            P_BANK_ASSIGNED_REF_CODE1       => l_bank_assigned_ref_code,
+            P_BANK_ASSIGNED_REF_CODE2       => l_bank_assigned_ref_code2,
+            P_PAYER_NAME                    => l_payer_legal_entity_name,
+            P_PAYER_BANK_NAME               => l_int_bank_name,
+            P_PAYER_BANK_BRANCH_NAME        => l_int_bank_branch_name,
+            P_PAYER_BANK_SWIFT_CODE         => l_int_eft_swift_code,
+            P_PAYER_BANK_ACCOUNT_NUMBER     => l_int_bank_account_number,
+            P_PAYER_BANK_IBAN_NUMBER        => l_int_bank_account_iban,
+            P_PAYEE_NAME                    => l_beneficiary_name,
+            P_PAYEE_BANK_NAME               => l_ext_bank_name,
+            P_PAYEE_BANK_BRANCH_NAME        => l_ext_bank_branch_name,
+            P_PAYEE_BANK_SWIFT_CODE         => l_ext_eft_swift_code,
+            P_PAYEE_BANK_ACCOUNT_NUMBER     => l_ext_bank_account_num_elec,
+            P_PAYEE_BANK_IBAN_NUMBER        => l_ext_bank_account_iban_number,
+            P_PAYMENT_AMOUNT                => l_payment_amount,
+            P_BANK_CHARGE_AMOUNT            =>  null,
+            P_PAYMENT_CURRENCY_CODE         => l_payment_currency_code,
+            P_EXCHANGE_RATE                 =>  1,
+            P_VALUE_DATE                    => sysdate,
+            P_REQUESTED_EXECUTION_DATE      => sysdate,
+            P_P_REJECT_DTLS_TBL_TYPE        => rej_dtls_TAB,
+            x_return_status                 => p_return_status,
+            x_return_message                => p_ret_msg,
+            x_msg_count                     => p_msg_cnt
+            );
+--            DBMS_OUTPUT.PUT_LINE('p_return_status: '||p_return_status);
+--            DBMS_OUTPUT.PUT_LINE('p_ret_msg: '||p_ret_msg);
+--            DBMS_OUTPUT.PUT_LINE('p_msg_cnt: '||p_msg_cnt);
+            
+            if p_return_status = 'S' and p_ret_msg = 'SUCCESS' then                
+                x_return_status:='SUCCESS';
+                x_msg_data:='Acknowledgement Posted Successfully';
+                dbms_output.put_line (x_return_status||':---:'||x_msg_data);
+                else
+                x_return_status:='REJECTED';
+                x_msg_data:='Error in posting Acknowledgement: '||sqlerrm;
+                dbms_output.put_line (x_return_status||':---:'||x_msg_data);
+                return;
+            end if;
+        
+        else
+        
+        x_return_status:='REJECTED';
+        x_msg_data:='Invalid Check Number!';
+        dbms_output.put_line (x_return_status||':---:'||x_msg_data);
+                
+        return;
+        
+        end if;
+        
+        EXCEPTION
+        WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('In API Exception: '||SQLERRM);
+        rollback;
+
+        x_return_status:='REJECTED';
+        x_msg_data:='In API Exception: '||SQLERRM;
+        return;
+      end;
+
+    end loop;
+
+EXCEPTION
+WHEN OTHERS THEN
+    DBMS_OUTPUT.PUT_LINE('SQLERRM: '||SQLERRM);
+  rollback;
+  
+        x_return_status:='REJECTED';
+        x_msg_data:='In Main Exception: '||SQLERRM;
+        
+  return;
+
+end payments_ack;
